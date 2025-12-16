@@ -1,0 +1,314 @@
+---
+format: html
+execute:
+  echo: false
+---
+
+```{ojs }
+
+viewof selectedMunicipio = Inputs.select(
+  ["Agustín Codazzi", "Becerril", "Chiriguaná", "El Paso", "La Jagua del Ibírico"],
+  { label: "Selecciona un municipio" }
+)
+```
+
+
+```{ojs}
+html`
+  <div style="display: flex; flex-direction: column; align-items: center;">
+    <h3 style="color: #033F24; text-align: center; margin-bottom: 0px;">
+      Estado actual de <strong>${selectedMunicipio}</strong>
+    </h3>
+    <div style="display: flex; justify-content: center;">
+      ${radialChart(nodes, links, [selectedMunicipio])}
+    </div>
+  </div>
+`
+```
+
+
+```{ojs}
+// Función principal radialChart
+radialChart = (nodes, links, highlights, dotSize = [5, 20]) => {
+  // Función auxiliar para dividir texto largo en varias líneas
+  const wrapText = (text, maxLength = 20) => {
+    const words = text.split(" ");
+    let lines = [];
+    let currentLine = "";
+
+    for (const word of words) {
+      if ((currentLine + " " + word).trim().length <= maxLength) {
+        currentLine += " " + word;
+      } else {
+        lines.push(currentLine.trim());
+        currentLine = word;
+      }
+    }
+    lines.push(currentLine.trim());
+    return lines.join("\n");
+  };
+
+  // 1. Filtrar solo enlaces directos
+  const highlightLinks = highlights
+    ? links.filter(d => highlights.includes(d.source) || highlights.includes(d.target))
+    : links;
+
+  const highlightSet = new Set();
+  highlightLinks.forEach(d => {
+    highlightSet.add(d.source);
+    highlightSet.add(d.target);
+  });
+
+  // 2. Enriquecer enlaces con índices, color y flag highlight
+  const li = links.map(d => ({
+    source: nodes.findIndex(n => n.id === d.source),
+    target: nodes.findIndex(n => n.id === d.target),
+    color: d.color,
+    tooltip: d.tooltip,
+    highlight: highlightSet.has(d.source) && highlightSet.has(d.target)
+  }));
+
+  // 3. Asignar color dinámico desde enlaces a nodos (excepto Municipios)
+  const nodeLinkColors = new Map();
+  li.forEach(link => {
+    if (!link.highlight) return;
+    const sourceNode = nodes[link.source];
+    const targetNode = nodes[link.target];
+
+    if (sourceNode.category !== "Municipios") nodeLinkColors.set(sourceNode.id, link.color);
+    if (targetNode.category !== "Municipios") nodeLinkColors.set(targetNode.id, link.color);
+  });
+
+  // 4. Enriquecer nodos: tamaño, color y tooltip dinámico
+  const n = nodes.map(d => {
+    const degree = links.reduce(
+      (cnt, l) => cnt + ((l.source === d.id || l.target === d.id) ? 1 : 0),
+      0
+    );
+
+    const isMunicipio = d.category === "Municipios";
+    const dynamicColor = nodeLinkColors.get(d.id);
+
+    const relatedTooltips = highlightLinks
+      .filter(l => l.source === d.id || l.target === d.id)
+      .map(l => l.tooltip)
+      .join("\n");
+
+    return {
+      ...d,
+      highlight: !highlights || highlightSet.has(d.id),
+      size: degree + 1,
+      drawColor: isMunicipio ? colors[d.category] : dynamicColor ?? colors[d.category],
+      tooltip: relatedTooltips || d.id
+    };
+  });
+
+  // 5. Escala radial de nodos
+  const [minSize, maxSize] = d3.extent(n, d => d.size);
+  const rScale = d3.scaleSqrt().domain([minSize, maxSize]).range(dotSize);
+
+  // 6. Generar flechas
+  const arrowMarks = li.map(l => {
+    const sourceAngle = (l.source / n.length) * 2 * Math.PI;
+    const targetAngle = (l.target / n.length) * 2 * Math.PI;
+    const insetStart = rScale(n[l.source].size) * 1.4 + 4;
+    const insetEnd   = rScale(n[l.target].size) * 1.4 + 4;
+    return Plot.arrow([l], {
+      x1: () => d3.pointRadial(sourceAngle, 200)[0],
+      y1: () => d3.pointRadial(sourceAngle, 200)[1],
+      x2: () => d3.pointRadial(targetAngle, 200)[0],
+      y2: () => d3.pointRadial(targetAngle, 200)[1],
+      stroke: l.color ?? "#222",
+      strokeWidth: l.highlight ? 1.5 : 1,
+      strokeOpacity: l.highlight ? 1 : 0.2,
+      bend: true,
+      insetStart,
+      insetEnd
+    });
+  });
+
+  // 7. Renderizado del gráfico
+  return Plot.plot({
+    width: 800,
+    height: 800,
+    inset: 110,
+    axis: null,
+    marks: [
+      ...arrowMarks,
+
+      // NODOS: contorno exterior
+      Plot.dot(n, {
+        x: (_, i) => d3.pointRadial((i / n.length) * 2 * Math.PI, 200)[0],
+        y: (_, i) => d3.pointRadial((i / n.length) * 2 * Math.PI, 200)[1],
+        r: { value: d => rScale(d.size) * 1.4, scale: null },
+        fill: d => d.drawColor,
+        fillOpacity: d => (d.highlight ? 0.15 : 0.05),
+        title: d => d.tooltip
+      }),
+
+      // NODOS: centro
+      Plot.dot(n, {
+        x: (_, i) => d3.pointRadial((i / n.length) * 2 * Math.PI, 200)[0],
+        y: (_, i) => d3.pointRadial((i / n.length) * 2 * Math.PI, 200)[1],
+        r: { value: d => rScale(d.size), scale: null },
+        fill: d => d.drawColor,
+        fillOpacity: d => (d.highlight ? 0.8 : 0.2),
+        stroke: "#fff",
+        strokeOpacity: 0.8,
+        strokeWidth: 1,
+        title: d => d.tooltip
+      }),
+
+      // TEXTOS: ángulos ≤ 180°
+      Plot.text(n, {
+        x: (_, i) => d3.pointRadial((i / n.length) * 2 * Math.PI, 220)[0],
+        y: (_, i) => d3.pointRadial((i / n.length) * 2 * Math.PI, 220)[1],
+        text: (d, i) => ((i / n.length) * 360) <= 180 ? wrapText(d.id) : "",
+        fill: d => d.drawColor,
+        fillOpacity: d => (d.highlight ? 1 : 0.2),
+        fontWeight: "bold",
+        textAnchor: "start",
+        fontSize: 12,
+        rotate: (_, i) => 90 - ((i / n.length) * 360)
+      }),
+
+      // TEXTOS: ángulos > 180°
+      Plot.text(n, {
+        x: (_, i) => d3.pointRadial((i / n.length) * 2 * Math.PI, 220)[0],
+        y: (_, i) => d3.pointRadial((i / n.length) * 2 * Math.PI, 220)[1],
+        text: (d, i) => ((i / n.length) * 360) > 180 ? wrapText(d.id) : "",
+        fill: d => d.drawColor,
+        fillOpacity: d => (d.highlight ? 1 : 0.4),
+        fontWeight: "bold",
+        textAnchor: "end",
+        fontSize: 12,
+        rotate: (_, i) => 270 - ((i / n.length) * 360)
+      })
+    ]
+  });
+};
+```
+
+
+
+```{ojs}
+function wrapText(text, maxLength = 20) {
+  const words = text.split(" ");
+  let lines = [];
+  let currentLine = "";
+
+  for (const word of words) {
+    if ((currentLine + " " + word).trim().length <= maxLength) {
+      currentLine += " " + word;
+    } else {
+      lines.push(currentLine.trim());
+      currentLine = word;
+    }
+  }
+  lines.push(currentLine.trim());
+  return lines.join("\n");
+}
+```
+
+
+
+```{ojs}
+colors = ({
+  Municipios: "#6A4C93", // Dusty purple
+  Variables: "#BC6C25" // Retro rust brown
+})
+```
+
+
+```{ojs}
+links = [
+  { source: "Especies", target: "Agustín Codazzi", color_id: "A", color: "#e09f3e" },
+  { source: "Especies", target: "La Jagua del Ibírico", color_id: "V", color: "#A3B18A" },
+  { source: "Especies", target: "Becerril", color_id: "A", color: "#e09f3e" },
+  { source: "Especies", target: "El Paso", color_id: "A", color: "#e09f3e" },
+  { source: "Especies", target: "Chiriguaná", color_id: "R", color: "#F15A59" },
+  { source: "Ecosistemas estratégicos", target: "Agustín Codazzi", color_id: "A", color: "#e09f3e" },
+  { source: "Ecosistemas estratégicos", target: "Becerril", color_id: "R", color: "#F15A59" },
+  { source: "Ecosistemas estratégicos", target: "Chiriguaná", color_id: "V", color: "#A3B18A" },
+  { source: "Ecosistemas estratégicos", target: "El Paso", color_id: "A", color: "#e09f3e" },
+  { source: "Ecosistemas estratégicos", target: "La Jagua del Ibírico", color_id: "R", color: "#F15A59" },
+  { source: "Biomasa", target: "Agustín Codazzi", color_id: "V", color: "#A3B18A" },
+  { source: "Biomasa", target: "Becerril", color_id: "A", color: "#e09f3e" },
+  { source: "Biomasa", target: "Chiriguaná", color_id: "R", color: "#F15A59" },
+  { source: "Biomasa", target: "El Paso", color_id: "A", color: "#e09f3e" },
+  { source: "Biomasa", target: "La Jagua del Ibírico", color_id: "R", color: "#F15A59" },
+  { source: "Graduados en bioeconomía", target: "Agustín Codazzi", color_id: "R", color: "#F15A59" },
+  { source: "Graduados en bioeconomía", target: "Becerril", color_id: "R", color: "#F15A59" },
+  { source: "Graduados en bioeconomía", target: "Chiriguaná", color_id: "R", color: "#F15A59" },
+  { source: "Graduados en bioeconomía", target: "El Paso", color_id: "R", color: "#F15A59" },
+  { source: "Graduados en bioeconomía", target: "La Jagua del Ibírico", color_id: "R", color: "#F15A59" },
+  { source: "Grupos de investigación en bioeconomía", target: "Agustín Codazzi", color_id: "R", color: "#F15A59" },
+  { source: "Grupos de investigación en bioeconomía", target: "Becerril", color_id: "R", color: "#F15A59" },
+  { source: "Grupos de investigación en bioeconomía", target: "Chiriguaná", color_id: "R", color: "#F15A59" },
+  { source: "Grupos de investigación en bioeconomía", target: "El Paso", color_id: "R", color: "#F15A59" },
+  { source: "Grupos de investigación en bioeconomía", target: "La Jagua del Ibírico", color_id: "R", color: "#F15A59" },
+  { source: "Publicaciones", target: "Agustín Codazzi", color_id: "R", color: "#F15A59" },
+  { source: "Publicaciones", target: "Becerril", color_id: "R", color: "#F15A59" },
+  { source: "Publicaciones", target: "Chiriguaná", color_id: "R", color: "#F15A59" },
+  { source: "Publicaciones", target: "El Paso", color_id: "R", color: "#F15A59" },
+  { source: "Publicaciones", target: "La Jagua del Ibírico", color_id: "R", color: "#F15A59" },
+  { source: "Dependencia SGR", target: "Agustín Codazzi", color_id: "A", color: "#e09f3e" },
+  { source: "Dependencia SGR", target: "Becerril", color_id: "A", color: "#e09f3e" },
+  { source: "Dependencia SGR", target: "Chiriguaná", color_id: "R", color: "#F15A59" },
+  { source: "Dependencia SGR", target: "El Paso", color_id: "R", color: "#F15A59" },
+  { source: "Dependencia SGR", target: "La Jagua del Ibírico", color_id: "R", color: "#F15A59" },
+  { source: "Inversión en bioeconomía", target: "Agustín Codazzi", color_id: "V", color: "#A3B18A" },
+  { source: "Inversión en bioeconomía", target: "Becerril", color_id: "A", color: "#e09f3e" },
+  { source: "Inversión en bioeconomía", target: "Chiriguaná", color_id: "R", color: "#F15A59" },
+  { source: "Inversión en bioeconomía", target: "El Paso", color_id: "R", color: "#F15A59" },
+  { source: "Inversión en bioeconomía", target: "La Jagua del Ibírico", color_id: "V", color: "#A3B18A" },
+  { source: "Acceso a crédito por cadenas", target: "Agustín Codazzi", color_id: "V", color: "#A3B18A" },
+  { source: "Acceso a crédito por cadenas", target: "Becerril", color_id: "R", color: "#F15A59" },
+  { source: "Acceso a crédito por cadenas", target: "Chiriguaná", color_id: "R", color: "#F15A59" },
+  { source: "Acceso a crédito por cadenas", target: "El Paso", color_id: "V", color: "#A3B18A" },
+  { source: "Acceso a crédito por cadenas", target: "La Jagua del Ibírico", color_id: "R", color: "#F15A59" },
+  { source: "Flujos comerciales", target: "Agustín Codazzi", color_id: "V", color: "#A3B18A" },
+  { source: "Flujos comerciales", target: "Becerril", color_id: "R", color: "#F15A59" },
+  { source: "Flujos comerciales", target: "Chiriguaná", color_id: "R", color: "#F15A59" },
+  { source: "Flujos comerciales", target: "El Paso", color_id: "V", color: "#A3B18A" },
+  { source: "Flujos comerciales", target: "La Jagua del Ibírico", color_id: "R", color: "#F15A59" },
+  { source: "Alternativas económicas", target: "Agustín Codazzi", color_id: "V", color: "#A3B18A" },
+  { source: "Alternativas económicas", target: "Becerril", color_id: "R", color: "#F15A59" },
+  { source: "Alternativas económicas", target: "Chiriguaná", color_id: "A", color: "#e09f3e" },
+  { source: "Alternativas económicas", target: "El Paso", color_id: "R", color: "#F15A59" },
+  { source: "Alternativas económicas", target: "La Jagua del Ibírico", color_id: "A", color: "#e09f3e" }
+];
+```
+
+
+```{ojs}
+nodes = [
+  { id: "Acceso a crédito por cadenas", category: "Variables" },
+  { id: "Agustín Codazzi", category: "Municipios" },
+  { id: "Alternativas económicas", category: "Variables" },
+  { id: "Becerril", category: "Municipios" },
+  { id: "Biomasa", category: "Variables" },
+  { id: "Chiriguaná", category: "Municipios" },
+  { id: "Dependencia SGR", category: "Variables" },
+  { id: "Dependencia petrolera (exportaciones)", category: "Variables" },
+  { id: "Ecosistemas estratégicos", category: "Variables" },
+  { id: "El Paso", category: "Municipios" },
+  { id: "Especies", category: "Variables" },
+  { id: "Flujos comerciales", category: "Variables" },
+  { id: "Graduados en bioeconomía", category: "Variables" },
+  { id: "Grupos de investigación en bioeconomía", category: "Variables" },
+  { id: "Inversión en bioeconomía", category: "Variables" },
+  { id: "La Jagua del Ibírico", category: "Municipios" },
+  { id: "Publicaciones", category: "Variables" }
+].sort((a, b) => a.id.localeCompare(b.id));
+```
+
+
+```{ojs}
+d3 = require("d3")
+```
+
+
+```{ojs}
+Plot = require("@observablehq/plot")
+```
